@@ -96,6 +96,17 @@ img{max-width:100%}
 
 .rhead{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 16px;margin-bottom:16px}
 .rhead h2{font-size:30px}
+.controls input[type=text]{width:180px;border-width:1px;padding:6px 8px;font-family:var(--f-body);text-transform:none;letter-spacing:0;color:var(--navy);font-size:14px}
+.results{display:flex;flex-direction:column;border:2px solid var(--navy);max-height:280px;overflow-y:auto}
+.results button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;border:0;border-bottom:1px solid var(--border);background:var(--card);padding:10px 12px;cursor:pointer}
+.results button:hover,.results button:focus-visible{background:var(--secondary)}
+.results button b{font-weight:600}
+.results button small{font-family:var(--f-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.results .add{font-family:var(--f-mono);font-size:11px;text-transform:uppercase;letter-spacing:.12em;flex-direction:row}
+.results p{margin:0;padding:10px 12px;color:var(--muted);font-size:14px}
+.picked{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--green-soft);padding:10px 14px;border-left:4px solid var(--green)}
+.picked b{font-family:var(--f-display);font-weight:700}
+.picked small{display:block;font-family:var(--f-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .summary{color:var(--muted);margin:4px 0 0;font-size:14px}
 .controls{display:flex;gap:10px;flex-wrap:wrap}
 .controls label{display:flex;flex-direction:column;font-family:var(--f-mono);font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);gap:4px}
@@ -160,6 +171,8 @@ img{max-width:100%}
 .aside li{padding-left:16px;border-left:3px solid var(--yellow)}
 .aside li:nth-child(2){border-color:var(--green)} .aside li:nth-child(3){border-color:var(--blue)} .aside li:nth-child(4){border-color:var(--red)}
 .aside li b{color:var(--navy);font-weight:600}
+.foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;padding-block:20px 32px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+.foot a{color:inherit}
 .kbadge{display:inline-block;font-family:var(--f-mono);font-size:11px;background:var(--yellow);color:var(--navy);padding:1px 6px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -224,6 +237,7 @@ img{max-width:100%}
       <div class="rhead">
         <div><h2 id="rTitle">Places</h2><p class="summary" id="summary"></p></div>
         <div class="controls">
+          <label for="q">Find a place<input type="text" id="q" placeholder="Name…" autocomplete="off"></label>
           <label for="focus">Crowd shown by<select id="focus"></select></label>
           <label for="sort">Sort<select id="sort">
             <option value="match">Most like my filter</option>
@@ -241,9 +255,11 @@ img{max-width:100%}
     <form class="form" id="rateForm" novalidate>
       <h2>Rate a place</h2>
       <div class="grid2">
-        <label class="field"><span>City</span><input type="text" id="rCity" list="cityList" autocomplete="off" placeholder="e.g. Austin"></label>
-        <label class="field"><span>Place</span><select id="rPlace"></select></label>
+        <label class="field"><span>City</span><select id="rCity"></select></label>
+        <label class="field"><span>Place</span><input type="text" id="rSearch" autocomplete="off" placeholder="Start typing a name…"></label>
       </div>
+      <div class="picked" id="rPicked" hidden></div>
+      <div class="results" id="rResults" hidden></div>
       <div id="newPlace" class="grid2" hidden>
         <label class="field"><span>Place name</span><input type="text" id="npName" maxlength="80"></label>
         <label class="field"><span>Type</span><select id="npCat"></select></label>
@@ -255,7 +271,6 @@ img{max-width:100%}
       <label class="field"><span>Note (optional)</span><textarea id="rNote" maxlength="280" placeholder="What's it like? Keep it about the place, not the people."></textarea></label>
       <div class="snap" id="snap"></div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><button type="submit" class="btn primary" id="rSubmit">Post rating →</button><p class="msg" id="rateMsg" role="status"></p></div>
-      <datalist id="cityList"></datalist>
     </form>
     <div class="aside">
       <h3>What gets posted</h3>
@@ -274,7 +289,7 @@ img{max-width:100%}
       <p class="hint">Every question is optional. Skipped answers show up as “Not shared” in crowd charts.</p>
       <div class="grid2" id="pFields"></div>
       <div class="grid2">
-        <label class="field"><span>Home city</span><input type="text" id="pCity" maxlength="60" list="cityList"></label>
+        <label class="field"><span>Home city</span><select id="pCity"></select></label>
         <label class="field"><span>School you went to</span><input type="text" id="pSchool" maxlength="80" placeholder="e.g. LSU or Catholic High"></label>
       </div>
       <label class="check consent"><input type="checkbox" id="pConsent"> <span>I agree to share my politics and religion answers. They are only used in anonymous group totals, and I can remove them anytime by choosing “Prefer not to say.”</span></label>
@@ -307,6 +322,7 @@ img{max-width:100%}
     </div>
   </section>
 </main>
+<footer class="gutter foot"><span class="mono">Sayso · crowd ratings</span><span>Business listings © <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a>, CDLA Permissive 2.0</span></footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="app.js"></script>

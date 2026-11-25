@@ -50,10 +50,11 @@ const SAMPLE_PLACES = [
   ["Nashville","Hymn & Bean","Coffee shop","Belmont",4.4,{religion:{Christian:3},age_band:{"18-24":3,"25-34":1.5},school:"Belmont"}],
   ["Nashville","Cinder Hot Chicken","Restaurant","The Gulch",4.3,{}],
 ];
+const SAMPLE_CITY = { Austin: "Austin, TX", Chicago: "Chicago, IL", Nashville: "Nashville, TN" };
 const SAMPLE = (() => {
   const r = rng(20261125), places = [], reviews = [];
   SAMPLE_PLACES.forEach(([city, name, category, neighborhood, q, bias], i) => {
-    const id = "s" + i; places.push({ id, city, name, category, neighborhood });
+    const id = "s" + i; places.push({ id, city: SAMPLE_CITY[city], name, category, neighborhood });
     const n = 28 + Math.floor(r() * 60);
     for (let j = 0; j < n; j++){
       const rv = { place_id: id }; let fit = 0;
@@ -84,18 +85,16 @@ const avg = a => a.length ? Math.round(a.reduce((s, r) => s + r.stars, 0) / a.le
 const api = {
   async cities(){
     if (S.source === "sample") return [...new Set(SAMPLE.places.map(p => p.city))].sort();
-    const { data, error } = await sb.from("places").select("city").eq("status", "open").limit(5000);
-    if (error) throw error;
-    return [...new Set(data.map(p => p.city))].sort();
+    return liveCities();
   },
-  async search(city, category, filters){
+  async search(city, category, filters, query){
     if (S.source === "live"){
-      const { data, error } = await sb.rpc("search_places", { p_city: city, p_category: category, p_filters: filters });
+      const { data, error } = await sb.rpc("search_places", { p_city: city, p_category: category, p_filters: filters, p_query: query || null, p_limit: 60 });
       if (error) throw error;
       return data;
     }
     const nf = Object.values(filters).filter(v => v.length).length;
-    return SAMPLE.places.filter(p => p.city === city && (!category || p.category === category)).map(p => {
+    return SAMPLE.places.filter(p => p.city === city && (!category || p.category === category) && (!query || norm(p.name).includes(norm(query)))).map(p => {
       const rs = SAMPLE.reviews.filter(r => r.place_id === p.id), ms = rs.filter(r => sampleMatches(r, filters));
       const n = rs.length, m = ms.length;
       const status = !nf ? "none" : n < K ? "insufficient" : m === 0 ? "zero" : m < K ? "few" : "ok";
@@ -130,13 +129,22 @@ const api = {
   },
 };
 
+let liveCityCache = null;
+async function liveCities(){
+  if (liveCityCache) return liveCityCache;
+  const { data, error } = await sb.from("cities").select("name").eq("active", true).order("name");
+  if (error) throw error;
+  return (liveCityCache = data.map(c => c.name));
+}
+
 /* ---------------- State ---------------- */
 const S = {
   tab: "explore", source: "sample", sourceChosen: false,
   cities: [], city: null, cat: "All", sel: Object.fromEntries(DK.map(d => [d, new Set()])), school: false,
-  focus: "age_band", sort: "match", open: new Set(),
+  focus: "age_band", sort: "match", open: new Set(), query: "",
   rows: [], crowd: {}, notes: {}, loading: false, error: "", note: "",
-  user: null, profile: null, stars: 0, livePlaces: [],
+  user: null, profile: null, stars: 0,
+  rateCities: [], rateCity: null, rateResults: [], ratePick: null, // ratePick: {id,name,category,neighborhood} or "new"
 };
 let searchSeq = 0;
 
@@ -153,7 +161,7 @@ async function loadCities(){
   try { S.cities = await api.cities(); } catch (e){ S.cities = []; S.error = "Couldn't load cities. Check your connection."; }
   if (!S.cities.includes(S.city)){
     const home = S.cities.find(c => norm(c) === norm(S.profile?.home_city));
-    S.city = home || (S.cities.includes("Baton Rouge") ? "Baton Rouge" : S.cities[0] || null);
+    S.city = home || (S.cities.includes("Baton Rouge, LA") ? "Baton Rouge, LA" : S.cities[0] || null);
   }
 }
 async function runSearch(){
@@ -161,7 +169,7 @@ async function runSearch(){
   S.loading = true; S.error = ""; renderList();
   if (!S.city){ S.rows = []; S.loading = false; renderList(); return; }
   try {
-    const rows = await api.search(S.city, S.cat === "All" ? null : S.cat, currentFilters());
+    const rows = await api.search(S.city, S.cat === "All" ? null : S.cat, currentFilters(), S.query.trim());
     if (seq !== searchSeq) return;
     S.rows = rows; S.loading = false;
     renderFilters(); renderList();
@@ -212,7 +220,10 @@ function renderList(){
   const rows = [...S.rows];
   const key = { match: r => filt ? (r.match_share ?? -1) : r.ratings, crowd: r => r.crowd_avg_stars ?? (filt ? -1 : r.avg_stars ?? -1), rating: r => r.avg_stars ?? -1, count: r => r.ratings }[S.sort];
   rows.sort((a, b) => key(b) - key(a) || b.ratings - a.ratings || a.name.localeCompare(b.name));
-  $("rTitle").textContent = S.city ? `${rows.length} ${rows.length === 1 ? catWord.replace(/s$/, "") : catWord} in ${S.city}` : "Places";
+  const word = rows.length === 1 ? catWord.replace(/s$/, "") : catWord;
+  $("rTitle").textContent = !S.city ? "Places"
+    : S.query.trim() ? `${rows.length}${rows.length === 60 ? "+" : ""} ${rows.length === 1 ? "match" : "matches"} in ${S.city}`
+    : S.source === "live" ? `${rows.length} rated ${word} in ${S.city}` : `${rows.length} ${word} in ${S.city}`;
   const f = currentFilters();
   const active = Object.entries(f).flatMap(([d, v]) => d === "school" ? [v[0] + " alumni"] : v);
   $("summary").textContent = S.note || (active.length ? `Crowd: ${active.join(" · ")}` : `No crowd filter. Pick up to ${MAX_FILTERS} traits, or tap “Like me”.`);
@@ -223,7 +234,14 @@ function renderList(){
     $("list").innerHTML = `<div class="empty"><h3>No places yet</h3><p>${S.source === "live" ? "Be the first: rate a place you know and it will show up here." : ""}</p>${S.source === "live" ? `<button type="button" class="btn primary" data-go="rate">Rate a place →</button>` : ""}</div>`;
     return;
   }
-  if (!rows.length){ $("list").innerHTML = `<div class="empty"><h3>Nothing here yet</h3><p>No ${esc(catWord)} in ${esc(S.city)} so far.</p></div>`; return; }
+  if (!rows.length){
+    $("list").innerHTML = S.query.trim()
+      ? `<div class="empty"><h3>No matches</h3><p>Nothing called “${esc(S.query.trim())}” in ${esc(S.city)}${S.cat === "All" ? "" : " under " + esc(catWord)}.</p></div>`
+      : S.source === "live"
+        ? `<div class="empty"><h3>No ratings in ${esc(S.city)} yet</h3><p>Search for any ${S.cat === "All" ? "business" : esc(S.cat.toLowerCase())} with “Find a place,” or be the first to rate one.</p><button type="button" class="btn primary" data-go="rate">Rate a place →</button></div>`
+        : `<div class="empty"><h3>Nothing here yet</h3><p>No ${esc(catWord)} in ${esc(S.city)} so far.</p></div>`;
+    return;
+  }
 
   $("list").innerHTML = rows.map(r => {
     const open = S.open.has(r.place_id), st = r.match_status;
@@ -262,20 +280,39 @@ function renderChrome(){
 }
 
 /* ---------------- Rate ---------------- */
-let placeTimer;
-async function loadLivePlaces(){
-  const city = $("rCity").value.trim();
-  if (!city){ S.livePlaces = []; renderRate(); return; }
-  const { data } = await sb.from("places").select("id,name,category,city").ilike("city", city).eq("status", "open").order("name").limit(1000);
-  if (norm($("rCity").value) === norm(city)){ S.livePlaces = data || []; renderRate(); }
+let placeTimer, qTimer, rateSeq = 0;
+async function prepareRate(){
+  try { S.rateCities = await liveCities(); } catch { S.rateCities = []; }
+  if (!S.rateCities.includes(S.rateCity)){
+    const home = S.rateCities.find(c => c === S.profile?.home_city);
+    S.rateCity = (S.source === "live" && S.rateCities.includes(S.city)) ? S.city : home || S.rateCities[0] || null;
+  }
+  renderRate();
+}
+async function searchRatePlaces(){
+  const q = $("rSearch").value.trim(), seq = ++rateSeq;
+  if (!S.rateCity || q.length < 2){ S.rateResults = []; renderRate(); return; }
+  const { data } = await sb.from("places").select("id,name,category,neighborhood,address")
+    .eq("city", S.rateCity).eq("status", "open").ilike("name", `%${q}%`).order("name").limit(20);
+  if (seq === rateSeq){ S.rateResults = data || []; renderRate(); }
 }
 function profileLine(){ return DK.map(d => S.profile?.[d]).filter(Boolean).join(" · "); }
 function renderRate(){
-  if (!$("rCity").value && S.profile?.home_city) $("rCity").value = S.profile.home_city;
-  const keep = $("rPlace").value;
-  $("rPlace").innerHTML = S.livePlaces.map(p => `<option value="${esc(p.id)}">${esc(p.name)} (${esc(p.category)})</option>`).join("") + `<option value="__new">+ Add a new place</option>`;
-  $("rPlace").value = [...$("rPlace").options].some(o => o.value === keep) ? keep : (S.livePlaces[0]?.id || "__new");
-  $("newPlace").hidden = $("rPlace").value !== "__new";
+  $("rCity").innerHTML = S.rateCities.map(c => `<option${c === S.rateCity ? " selected" : ""}>${esc(c)}</option>`).join("");
+  const pick = S.ratePick, q = $("rSearch").value.trim();
+  $("rPicked").hidden = !pick;
+  if (pick) $("rPicked").innerHTML = (pick === "new"
+      ? `<div><b>New place</b><small>Fill in the details below</small></div>`
+      : `<div><b>${esc(pick.name)}</b><small>${esc(pick.category)}${pick.neighborhood ? " · " + esc(pick.neighborhood) : ""}</small></div>`)
+    + `<button type="button" class="btn ghost" id="rChange">Change</button>`;
+  $("rSearch").disabled = !!pick;
+  $("rResults").hidden = !!pick || q.length < 2;
+  if (!$("rResults").hidden){
+    $("rResults").innerHTML = S.rateResults.map(p => `<button type="button" data-pick="${esc(p.id)}"><b>${esc(p.name)}</b><small>${esc(p.category)}${p.neighborhood ? " · " + esc(p.neighborhood) : ""}${p.address ? " · " + esc(p.address) : ""}</small></button>`).join("")
+      + (S.rateResults.length ? "" : `<p>No match in ${esc(S.rateCity || "this city")} yet.</p>`)
+      + `<button type="button" class="add" data-pick="__new">+ Can't find it? Add “${esc(q)}”</button>`;
+  }
+  $("newPlace").hidden = pick !== "new";
   $("stars").querySelectorAll("label").forEach((l, i) => l.classList.toggle("lit", i < S.stars));
   const line = profileLine();
   $("snap").innerHTML = !S.user ? `You need to sign in to post. <button type="button" class="btn ghost" data-go="signin" style="padding:0">Sign in →</button>`
@@ -288,7 +325,10 @@ function renderRate(){
 function fillProfileForm(){
   const p = S.profile || {};
   $("pFields").innerHTML = DK.map(d => `<label class="field"><span>${DIMS[d].label}</span><select id="p_${d}"><option value="">Prefer not to say</option>${DIMS[d].opts.map(o => `<option${p[d] === o ? " selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`).join("");
-  $("pCity").value = p.home_city || ""; $("pSchool").value = p.school || "";
+  const cities = liveCityCache || [];
+  const opts = !p.home_city || cities.includes(p.home_city) ? cities : [...cities, p.home_city];
+  $("pCity").innerHTML = `<option value="">Somewhere else / prefer not to say</option>` + opts.map(c => `<option${c === p.home_city ? " selected" : ""}>${esc(c)}</option>`).join("");
+  $("pSchool").value = p.school || "";
   $("pConsent").checked = !!p.sensitive_consent_at;
 }
 function renderProfile(){
@@ -314,9 +354,15 @@ document.addEventListener("click", async e => {
   const t = e.target.closest("button"); if (!t) return;
   if (t.dataset.tab || t.dataset.go){
     S.tab = t.dataset.tab || t.dataset.go; render();
-    if (S.tab === "rate") loadLivePlaces();
+    if (S.tab === "rate") prepareRate();
     return;
   }
+  if (t.dataset.pick){
+    if (t.dataset.pick === "__new"){ S.ratePick = "new"; $("npName").value = $("rSearch").value.trim(); }
+    else { const p = S.rateResults.find(x => x.id === t.dataset.pick); if (p) S.ratePick = p; }
+    renderRate(); return;
+  }
+  if (t.id === "rChange"){ S.ratePick = null; renderRate(); $("rSearch").focus(); return; }
   if (t.dataset.src || t.id === "srcSample" || t.id === "srcLive"){
     S.source = t.dataset.src || (t.id === "srcLive" ? "live" : "sample"); S.sourceChosen = true; S.open.clear(); S.tab = "explore";
     render(); refreshExplore(); return;
@@ -342,8 +388,9 @@ document.addEventListener("click", async e => {
   }
   if (t.dataset.rate){
     const r = S.rows.find(x => x.place_id === t.dataset.rate);
-    S.tab = "rate"; $("rCity").value = S.city || ""; render();
-    await loadLivePlaces(); if (r){ $("rPlace").value = r.place_id; renderRate(); }
+    S.tab = "rate"; S.rateCity = S.city;
+    S.ratePick = r ? { id: r.place_id, name: r.name, category: r.category, neighborhood: r.neighborhood } : null;
+    render(); prepareRate();
     return;
   }
   if (t.id === "matchMe"){
@@ -367,8 +414,9 @@ $("school").addEventListener("change", e => {
   if (e.target.checked && filterCount() >= MAX_FILTERS){ e.target.checked = false; S.note = `You can use up to ${MAX_FILTERS} crowd traits at once.`; renderList(); return; }
   S.school = e.target.checked; S.note = ""; runSearch();
 });
-$("rCity").addEventListener("input", () => { clearTimeout(placeTimer); placeTimer = setTimeout(loadLivePlaces, 300); });
-$("rPlace").addEventListener("change", () => { $("newPlace").hidden = $("rPlace").value !== "__new"; });
+$("rCity").addEventListener("change", e => { S.rateCity = e.target.value; S.ratePick = null; S.rateResults = []; $("rSearch").value = ""; renderRate(); });
+$("rSearch").addEventListener("input", () => { clearTimeout(placeTimer); placeTimer = setTimeout(searchRatePlaces, 250); renderRate(); });
+$("q").addEventListener("input", e => { clearTimeout(qTimer); qTimer = setTimeout(() => { S.query = e.target.value; runSearch(); }, 300); });
 $("npCat").innerHTML = CATS.map(c => `<option>${c}</option>`).join("");
 $("stars").innerHTML = [1,2,3,4,5].map(n => `<input type="radio" name="stars" id="star${n}" value="${n}"><label for="star${n}" aria-label="${n} star${n > 1 ? "s" : ""}">★</label>`).join("");
 $("stars").addEventListener("change", e => { S.stars = +e.target.value; renderRate(); });
@@ -405,19 +453,20 @@ $("profileForm").addEventListener("submit", async e => {
 $("rateForm").addEventListener("submit", async e => {
   e.preventDefault(); if (!S.user) return;
   const msg = $("rateMsg"); msg.className = "msg err";
-  const city = $("rCity").value.trim();
-  if (!city){ msg.textContent = "Enter the city the place is in."; return; }
+  const city = S.rateCity;
+  if (!city){ msg.textContent = "Pick a city."; return; }
+  if (!S.ratePick){ msg.textContent = "Search for the place and pick it from the list."; return; }
   if (!S.stars){ msg.textContent = "Pick a star rating."; return; }
-  let placeId = $("rPlace").value;
   const newName = $("npName").value.trim();
-  if (placeId === "__new" && !newName){ msg.textContent = "Enter the place's name."; return; }
+  if (S.ratePick === "new" && !newName){ msg.textContent = "Enter the place's name."; return; }
+  let placeId = S.ratePick === "new" ? null : S.ratePick.id;
   $("rSubmit").disabled = true; msg.className = "msg"; msg.textContent = "Posting…";
   try {
-    if (placeId === "__new"){
-      const dup = S.livePlaces.find(p => norm(p.name) === norm(newName));
-      if (dup) placeId = dup.id;
+    if (!placeId){
+      const { data: same } = await sb.from("places").select("id").eq("city", city).ilike("name", newName.replace(/[%_]/g, "")).limit(1);
+      if (same?.length) placeId = same[0].id;
       else {
-        const { data, error } = await sb.from("places").insert({ name: newName.slice(0, 120), category: $("npCat").value, city: city.slice(0, 60), neighborhood: $("npHood").value.trim().slice(0, 60) || null }).select("id").single();
+        const { data, error } = await sb.from("places").insert({ name: newName.slice(0, 120), category: $("npCat").value, city, neighborhood: $("npHood").value.trim().slice(0, 60) || null }).select("id").single();
         if (error) throw error; placeId = data.id;
       }
     }
@@ -426,9 +475,10 @@ $("rateForm").addEventListener("submit", async e => {
     S.stars = 0; $("rNote").value = ""; $("npName").value = ""; $("npHood").value = "";
     document.querySelectorAll("#stars input").forEach(i => i.checked = false);
     msg.textContent = "";
-    S.source = "live"; S.sourceChosen = true; S.city = city; S.cat = "All"; S.open = new Set([placeId]); S.tab = "explore";
+    S.ratePick = null; S.rateResults = []; $("rSearch").value = "";
+    S.source = "live"; S.sourceChosen = true; S.city = city; S.cat = "All"; S.query = ""; $("q").value = "";
+    S.open = new Set([placeId]); S.tab = "explore";
     render(); await refreshExplore();
-    const c = S.cities.find(x => norm(x) === norm(city)); if (c && c !== S.city){ S.city = c; renderFilters(); runSearch(); }
   } catch (err){
     msg.className = "msg err"; msg.textContent = "Couldn't post: " + (err?.message || "check your connection and try again.");
   }
@@ -448,6 +498,7 @@ sb.auth.onAuthStateChange((_event, session) => {
 });
 (async () => {
   render();
+  liveCities().then(() => { if (!document.activeElement?.closest?.("#profileForm")) fillProfileForm(); }).catch(() => {});
   // Start on live data if there's anything there; otherwise show the sample.
   try {
     const { count } = await sb.from("places").select("id", { count: "exact", head: true });
