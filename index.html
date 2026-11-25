@@ -171,6 +171,31 @@ img{max-width:100%}
 .aside li{padding-left:16px;border-left:3px solid var(--yellow)}
 .aside li:nth-child(2){border-color:var(--green)} .aside li:nth-child(3){border-color:var(--blue)} .aside li:nth-child(4){border-color:var(--red)}
 .aside li b{color:var(--navy);font-weight:600}
+.dishes{display:flex;flex-direction:column;gap:8px}
+.dish{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center}
+.dish input{border-width:1px}
+.mini-stars{display:flex;gap:2px}
+.mini-stars button{width:30px;height:30px;border:1.5px solid var(--navy);background:var(--card);color:var(--border);cursor:pointer;font-size:15px;line-height:1;padding:0}
+.mini-stars button.lit{background:var(--yellow);color:var(--navy)}
+.x{border:0;background:none;cursor:pointer;color:var(--muted);font-size:18px;width:30px;height:30px}
+.x:hover{color:var(--red)}
+@media (max-width:520px){.dish{grid-template-columns:minmax(0,1fr) auto}.dish .mini-stars{grid-column:1;grid-row:2}}
+.photos{display:flex;flex-wrap:wrap;gap:8px}
+.thumb{position:relative;width:84px;height:84px;border:2px solid var(--navy);overflow:hidden;background:var(--secondary)}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb .x{position:absolute;top:2px;right:2px;background:var(--card);width:24px;height:24px;font-size:14px}
+.add-photo{width:84px;height:84px;border:2px dashed var(--navy);background:transparent;cursor:pointer;font-family:var(--f-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--navy)}
+.top-dishes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.top-dishes li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:baseline;font-size:14px}
+.top-dishes .rk{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
+.top-dishes small{color:var(--muted);font-family:var(--f-mono);font-size:11px}
+.post{background:var(--secondary);border-radius:12px;padding:10px 14px;display:flex;flex-direction:column;gap:8px;font-size:14px}
+.post p{margin:0;padding:0;background:none;overflow-wrap:anywhere}
+.post-dishes{display:flex;flex-wrap:wrap;gap:6px}
+.post-dishes span{background:var(--card);border:1px solid var(--border);padding:2px 8px;font-size:12.5px}
+.post-photos{display:flex;flex-wrap:wrap;gap:6px}
+.post-photos a{display:block;width:96px;height:96px;border:2px solid var(--navy);overflow:hidden}
+.post-photos img{width:100%;height:100%;object-fit:cover;display:block}
 .foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 16px;padding-block:20px 32px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
 .foot a{color:inherit}
 .kbadge{display:inline-block;font-family:var(--f-mono);font-size:11px;background:var(--yellow);color:var(--navy);padding:1px 6px}
@@ -266,6 +291,18 @@ img{max-width:100%}
         <label class="field"><span>Neighborhood</span><input type="text" id="npHood" maxlength="60"></label>
       </div>
       <fieldset class="field" style="border:0;padding:0;margin:0"><legend>Your rating</legend><div class="stars" id="stars"></div></fieldset>
+      <fieldset class="field" id="orderBox" hidden style="border:0;padding:0;margin:0">
+        <legend>What did you order? (optional)</legend>
+        <div class="dishes" id="dishRows"></div>
+        <button type="button" class="btn" id="addDish" style="align-self:flex-start">+ Add a dish</button>
+        <datalist id="dishList"></datalist>
+      </fieldset>
+      <div class="field">
+        <span>Photos (optional, up to 4)</span>
+        <div class="photos" id="photoRow"></div>
+        <p class="hint">Food or the place only, please, no people. Location data is removed before upload.</p>
+        <input type="file" id="photoInput" accept="image/*" multiple hidden>
+      </div>
       <label class="field"><span>How often do you go?</span>
         <select id="rFreq"><option value="first">First visit</option><option value="few">A few times</option><option value="regular">I'm a regular</option></select></label>
       <label class="field"><span>Note (optional)</span><textarea id="rNote" maxlength="280" placeholder="What's it like? Keep it about the place, not the people."></textarea></label>

@@ -71,6 +71,25 @@ const SAMPLE = (() => {
   });
   return { places, reviews };
 })();
+// sample dishes for the sample restaurants (own random stream so other sample numbers don't change)
+const SAMPLE_MENUS = {
+  "Pho Lucky": ["Pho tai", "Bún bò Huế", "Spring rolls", "Lemongrass chicken banh mi", "Vietnamese iced coffee"],
+  "Gemma's Trattoria": ["Cacio e pepe", "Lasagna bolognese", "Chicken parm", "Burrata", "Tiramisu"],
+  "Cinder Hot Chicken": ["Hot chicken sandwich", "Tenders, extra hot", "Mac and cheese", "Banana pudding"],
+};
+(() => {
+  const r = rng(4242);
+  for (const p of SAMPLE.places){
+    const menu = SAMPLE_MENUS[p.name]; if (!menu) continue;
+    const bonus = menu.map(() => (r() - .5) * 1.6);
+    for (const rv of SAMPLE.reviews.filter(x => x.place_id === p.id)){
+      if (r() < .3) continue;
+      const names = new Set([pick(r, menu, menu.map((_, i) => menu.length - i))]);
+      if (r() < .4) names.add(pick(r, menu, menu.map(() => 1)));
+      rv.items = [...names].map(name => ({ name, stars: Math.max(1, Math.min(5, Math.round(rv.stars + bonus[menu.indexOf(name)] + (r() - .5)))) }));
+    }
+  }
+})();
 function sampleMatches(rv, f){
   for (const [d, vals] of Object.entries(f)){
     if (!vals.length) continue;
@@ -121,13 +140,39 @@ const api = {
     }
     return { ratings: n, hidden: false, dims };
   },
-  async notes(placeId){
+  async posts(placeId){
     if (S.source === "sample") return [];
-    const { data, error } = await sb.rpc("place_notes", { p_place_id: placeId, p_limit: 6 });
+    const { data, error } = await sb.rpc("place_posts", { p_place_id: placeId, p_limit: 6 });
     if (error) throw error;
     return data;
   },
+  async dishes(placeId){
+    if (S.source === "live"){
+      const { data, error } = await sb.rpc("place_dishes", { p_place_id: placeId, p_limit: 8 });
+      if (error) throw error;
+      return data;
+    }
+    const agg = {};
+    for (const rv of SAMPLE.reviews) if (rv.place_id === placeId) for (const it of rv.items || []){
+      const k = norm(it.name); (agg[k] ||= { dish: it.name, orders: 0, sum: 0 }); agg[k].orders++; agg[k].sum += it.stars;
+    }
+    return Object.values(agg).map(a => ({ dish: a.dish, orders: a.orders, avg_stars: Math.round(a.sum / a.orders * 10) / 10 }))
+      .sort((a, b) => b.orders - a.orders || b.avg_stars - a.avg_stars).slice(0, 8);
+  },
 };
+const ORDER_CATS = ["Restaurant"];   // categories that get "What did you order?"
+const MAX_PHOTOS = 4;
+const photoUrl = path => `${SB_URL}/storage/v1/object/public/review-photos/${encodeURIComponent(path)}`;
+async function toJpeg(file){
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  // re-encoding through a canvas drops EXIF data, including GPS location
+  return await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("Couldn't process that photo")), "image/jpeg", 0.82));
+}
 
 let liveCityCache = null;
 async function liveCities(){
@@ -142,7 +187,8 @@ const S = {
   tab: "explore", source: "sample", sourceChosen: false,
   cities: [], city: null, cat: "All", sel: Object.fromEntries(DK.map(d => [d, new Set()])), school: false,
   focus: "age_band", sort: "match", open: new Set(), query: "",
-  rows: [], crowd: {}, notes: {}, loading: false, error: "", note: "",
+  rows: [], crowd: {}, posts: {}, dishes: {}, loading: false, error: "", note: "",
+  items: [], photos: [], removedPhotos: [], // rating form: dishes [{name,stars}], photos [{path}|{file,url}]
   user: null, profile: null, stars: 0,
   rateCities: [], rateCity: null, rateResults: [], ratePick: null, // ratePick: {id,name,category,neighborhood} or "new"
 };
@@ -250,7 +296,7 @@ function renderList(){
       : st === "few" ? `<div class="big">&lt;${K}</div><div class="cap">raters match your crowd</div>`
       : `<div class="big">${Math.round((r.match_share || 0) * 100)}%</div><div class="cap">of raters match your crowd</div>`;
     const crowdRt = st === "none" ? "" : `<span class="crowd">Your crowd: ${st === "ok" ? `<span class="st">★ ${(+r.crowd_avg_stars).toFixed(1)}</span> <small>(~${r.match_count})</small>` : `<small>too few to rate</small>`}</span>`;
-    const notes = S.notes[r.place_id] || [];
+    const posts = S.posts[r.place_id] || [], dishes = S.dishes[r.place_id] || [];
     return `<article class="card">
       <div class="card-head">
         <div style="min-width:0"><h3>${esc(r.name)}</h3><div class="meta">${esc(r.category)}${r.neighborhood ? " · " + esc(r.neighborhood) : ""}</div>
@@ -259,7 +305,13 @@ function renderList(){
       </div>
       <div class="strip"><span class="strip-label">${DIMS[S.focus].label}</span>${compBar(r.place_id, S.focus, r.ratings)}</div>
       ${open ? `<div class="detail">${DK.filter(d => d !== S.focus).map(d => `<div class="strip"><span class="strip-label">${DIMS[d].label}</span>${compBar(r.place_id, d, r.ratings)}</div>`).join("")}
-        ${notes.length ? `<div class="notes"><span class="strip-label">Recent notes</span>${notes.map(x => `<p><span class="nst">★ ${x.stars}</span>${esc(x.note)} <small class="meta">· ${esc(FREQ[x.freq] || "")}</small></p>`).join("")}</div>` : ""}</div>` : ""}
+        ${dishes.length ? `<div class="notes"><span class="strip-label">Top dishes</span><ol class="top-dishes">${dishes.map((d, i) => `<li><span class="rk">${i + 1}</span><span><b>${esc(d.dish)}</b> <span class="st">★ ${(+d.avg_stars).toFixed(1)}</span></span><small>${d.orders} order${d.orders === 1 ? "" : "s"}</small></li>`).join("")}</ol></div>` : ""}
+        ${posts.length ? `<div class="notes"><span class="strip-label">Recent posts</span>${posts.map(x => `<div class="post">
+            <div><span class="nst">★ ${x.stars}</span><small class="meta">${esc(FREQ[x.freq] || "")}${x.posted_on ? " · " + esc(x.posted_on) : ""}</small></div>
+            ${x.note ? `<p>${esc(x.note)}</p>` : ""}
+            ${(x.items || []).length ? `<div class="post-dishes">${x.items.map(it => `<span>${esc(it.name)} ★${+it.stars}</span>`).join("")}</div>` : ""}
+            ${(x.photos || []).length ? `<div class="post-photos">${x.photos.filter(p => /^[0-9a-f-]{36}\.jpg$/.test(p)).map(p => `<a href="${photoUrl(p)}" target="_blank" rel="noopener"><img src="${photoUrl(p)}" alt="Photo from a rating" loading="lazy"></a>`).join("")}</div>` : ""}
+          </div>`).join("")}</div>` : ""}</div>` : ""}
       <div class="card-foot"><button type="button" class="btn ghost" data-open="${esc(r.place_id)}" aria-expanded="${open}">${open ? "Hide full crowd" : "See full crowd →"}</button>
         ${S.source === "live" ? `<button type="button" class="btn" data-rate="${esc(r.place_id)}">Rate this place</button>` : ""}</div>
     </article>`;
@@ -297,6 +349,43 @@ async function searchRatePlaces(){
   if (seq === rateSeq){ S.rateResults = data || []; renderRate(); }
 }
 function profileLine(){ return DK.map(d => S.profile?.[d]).filter(Boolean).join(" · "); }
+function renderDishes(){
+  $("dishRows").innerHTML = S.items.map((it, i) => `<div class="dish">
+      <input type="text" list="dishList" maxlength="80" placeholder="e.g. Shrimp po-boy" data-dish-name="${i}" value="${esc(it.name)}" aria-label="Dish ${i + 1}">
+      <div class="mini-stars" role="group" aria-label="Stars for dish ${i + 1}">${[1, 2, 3, 4, 5].map(v => `<button type="button" data-dish-star="${i}" data-v="${v}" class="${v <= it.stars ? "lit" : ""}" aria-label="${v} star${v > 1 ? "s" : ""}" aria-pressed="${v === it.stars}">★</button>`).join("")}</div>
+      <button type="button" class="x" data-dish-remove="${i}" aria-label="Remove dish ${i + 1}">✕</button>
+    </div>`).join("");
+  $("addDish").hidden = S.items.length >= 10;
+}
+function renderPhotos(){
+  $("photoRow").innerHTML = S.photos.map((p, i) => `<div class="thumb"><img src="${p.path ? photoUrl(p.path) : p.url}" alt="Your photo ${i + 1}"><button type="button" class="x" data-photo-remove="${i}" aria-label="Remove photo ${i + 1}">✕</button></div>`).join("")
+    + (S.photos.length < MAX_PHOTOS ? `<button type="button" class="add-photo" id="addPhoto">+ Add photo</button>` : "");
+}
+function resetRateExtras(){
+  S.photos.forEach(p => p.url && URL.revokeObjectURL(p.url));
+  S.items = []; S.photos = []; S.removedPhotos = []; S.stars = 0;
+  document.querySelectorAll("#stars input").forEach(i => i.checked = false);
+  $("rNote").value = ""; $("rFreq").value = "first"; $("rateMsg").textContent = ""; $("dishList").innerHTML = "";
+}
+// If you've rated this place before, load that rating so posting again edits it.
+async function loadMyReview(placeId){
+  resetRateExtras(); renderRate();
+  if (!placeId) return;
+  if (ORDER_CATS.includes(S.ratePick?.category)){
+    sb.rpc("place_dishes", { p_place_id: placeId, p_limit: 20 }).then(({ data }) => {
+      $("dishList").innerHTML = (data || []).map(d => `<option value="${esc(d.dish)}">`).join("");
+    });
+  }
+  if (!S.user) return;
+  const { data } = await sb.from("reviews").select("stars,freq,note,items,photos").eq("place_id", placeId).eq("user_id", S.user.id).maybeSingle();
+  if (!data || S.ratePick?.id !== placeId) return;
+  S.stars = data.stars; $("star" + data.stars).checked = true;
+  $("rFreq").value = data.freq; $("rNote").value = data.note || "";
+  S.items = (data.items || []).map(i => ({ name: i.name, stars: i.stars }));
+  S.photos = (data.photos || []).map(path => ({ path }));
+  $("rateMsg").className = "msg"; $("rateMsg").textContent = "You've rated this place before. Posting again updates that rating.";
+  renderRate();
+}
 function renderRate(){
   $("rCity").innerHTML = S.rateCities.map(c => `<option${c === S.rateCity ? " selected" : ""}>${esc(c)}</option>`).join("");
   const pick = S.ratePick, q = $("rSearch").value.trim();
@@ -313,6 +402,10 @@ function renderRate(){
       + `<button type="button" class="add" data-pick="__new">+ Can't find it? Add “${esc(q)}”</button>`;
   }
   $("newPlace").hidden = pick !== "new";
+  const cat = pick === "new" ? $("npCat").value : pick?.category;
+  $("orderBox").hidden = !ORDER_CATS.includes(cat);
+  if (!$("orderBox").hidden) renderDishes();
+  renderPhotos();
   $("stars").querySelectorAll("label").forEach((l, i) => l.classList.toggle("lit", i < S.stars));
   const line = profileLine();
   $("snap").innerHTML = !S.user ? `You need to sign in to post. <button type="button" class="btn ghost" data-go="signin" style="padding:0">Sign in →</button>`
@@ -348,7 +441,7 @@ function render(){
   if (S.tab === "rate") renderRate();
   if (S.tab === "profile") renderProfile();
 }
-async function refreshExplore(){ S.crowd = {}; S.notes = {}; await loadCities(); renderFilters(); await runSearch(); }
+async function refreshExplore(){ S.crowd = {}; S.posts = {}; S.dishes = {}; await loadCities(); renderFilters(); await runSearch(); }
 
 document.addEventListener("click", async e => {
   const t = e.target.closest("button"); if (!t) return;
@@ -358,11 +451,24 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.dataset.pick){
-    if (t.dataset.pick === "__new"){ S.ratePick = "new"; $("npName").value = $("rSearch").value.trim(); }
-    else { const p = S.rateResults.find(x => x.id === t.dataset.pick); if (p) S.ratePick = p; }
-    renderRate(); return;
+    if (t.dataset.pick === "__new"){ S.ratePick = "new"; $("npName").value = $("rSearch").value.trim(); renderRate(); }
+    else { const p = S.rateResults.find(x => x.id === t.dataset.pick); if (p){ S.ratePick = p; loadMyReview(p.id); } }
+    return;
   }
-  if (t.id === "rChange"){ S.ratePick = null; renderRate(); $("rSearch").focus(); return; }
+  if (t.id === "rChange"){ S.ratePick = null; resetRateExtras(); renderRate(); $("rSearch").focus(); return; }
+  if (t.dataset.dishStar !== undefined){ S.items[+t.dataset.dishStar].stars = +t.dataset.v; renderDishes(); return; }
+  if (t.dataset.dishRemove !== undefined){ S.items.splice(+t.dataset.dishRemove, 1); renderDishes(); return; }
+  if (t.id === "addDish"){
+    S.items.push({ name: "", stars: 0 }); renderDishes();
+    $("dishRows").querySelector(`[data-dish-name="${S.items.length - 1}"]`)?.focus(); return;
+  }
+  if (t.id === "addPhoto"){ $("photoInput").click(); return; }
+  if (t.dataset.photoRemove !== undefined){
+    const [p] = S.photos.splice(+t.dataset.photoRemove, 1);
+    if (p?.path && !p.file) S.removedPhotos.push(p.path);
+    if (p?.url) URL.revokeObjectURL(p.url);
+    renderPhotos(); return;
+  }
   if (t.dataset.src || t.id === "srcSample" || t.id === "srcLive"){
     S.source = t.dataset.src || (t.id === "srcLive" ? "live" : "sample"); S.sourceChosen = true; S.open.clear(); S.tab = "explore";
     render(); refreshExplore(); return;
@@ -382,7 +488,9 @@ document.addEventListener("click", async e => {
     const id = t.dataset.open;
     if (S.open.has(id)) S.open.delete(id); else {
       S.open.add(id);
-      if (!S.notes[id]) api.notes(id).then(n => { S.notes[id] = n; renderList(); }).catch(() => {});
+      const row = S.rows.find(x => x.place_id === id);
+      if (!S.posts[id]) api.posts(id).then(n => { S.posts[id] = n; renderList(); }).catch(() => {});
+      if (!S.dishes[id] && ORDER_CATS.includes(row?.category)) api.dishes(id).then(d => { S.dishes[id] = d; renderList(); }).catch(() => {});
     }
     renderList(); return;
   }
@@ -390,7 +498,7 @@ document.addEventListener("click", async e => {
     const r = S.rows.find(x => x.place_id === t.dataset.rate);
     S.tab = "rate"; S.rateCity = S.city;
     S.ratePick = r ? { id: r.place_id, name: r.name, category: r.category, neighborhood: r.neighborhood } : null;
-    render(); prepareRate();
+    render(); prepareRate(); if (r) loadMyReview(r.place_id);
     return;
   }
   if (t.id === "matchMe"){
@@ -415,6 +523,16 @@ $("school").addEventListener("change", e => {
   S.school = e.target.checked; S.note = ""; runSearch();
 });
 $("rCity").addEventListener("change", e => { S.rateCity = e.target.value; S.ratePick = null; S.rateResults = []; $("rSearch").value = ""; renderRate(); });
+$("dishRows").addEventListener("input", e => { const i = e.target.dataset.dishName; if (i !== undefined && S.items[+i]) S.items[+i].name = e.target.value; });
+$("photoInput").addEventListener("change", e => {
+  for (const f of [...e.target.files]){
+    if (S.photos.length >= MAX_PHOTOS) break;
+    if (f.type && !f.type.startsWith("image/")) continue;
+    S.photos.push({ file: f, url: URL.createObjectURL(f) });
+  }
+  e.target.value = ""; renderPhotos();
+});
+$("npCat").addEventListener("change", () => renderRate());
 $("rSearch").addEventListener("input", () => { clearTimeout(placeTimer); placeTimer = setTimeout(searchRatePlaces, 250); renderRate(); });
 $("q").addEventListener("input", e => { clearTimeout(qTimer); qTimer = setTimeout(() => { S.query = e.target.value; runSearch(); }, 300); });
 $("npCat").innerHTML = CATS.map(c => `<option>${c}</option>`).join("");
@@ -459,6 +577,9 @@ $("rateForm").addEventListener("submit", async e => {
   if (!S.stars){ msg.textContent = "Pick a star rating."; return; }
   const newName = $("npName").value.trim();
   if (S.ratePick === "new" && !newName){ msg.textContent = "Enter the place's name."; return; }
+  const showOrder = ORDER_CATS.includes(S.ratePick === "new" ? $("npCat").value : S.ratePick.category);
+  const items = showOrder ? S.items.filter(i => i.name.trim()) : [];
+  if (items.some(i => !i.stars)){ msg.textContent = "Give each dish 1 to 5 stars, or remove it."; return; }
   let placeId = S.ratePick === "new" ? null : S.ratePick.id;
   $("rSubmit").disabled = true; msg.className = "msg"; msg.textContent = "Posting…";
   try {
@@ -470,10 +591,28 @@ $("rateForm").addEventListener("submit", async e => {
         if (error) throw error; placeId = data.id;
       }
     }
-    const { error } = await sb.from("reviews").upsert({ place_id: placeId, stars: S.stars, freq: $("rFreq").value, note: $("rNote").value.trim().slice(0, 280) || null }, { onConflict: "place_id,user_id" });
+    const paths = [];
+    for (const p of S.photos){
+      if (!p.file){ paths.push(p.path); continue; }
+      if (!p.path){
+        msg.textContent = `Uploading photo ${paths.length + 1} of ${S.photos.length}…`;
+        let blob;
+        try { blob = await toJpeg(p.file); } catch { throw new Error("couldn't read one of the photos. Try a JPEG or PNG."); }
+        const path = crypto.randomUUID() + ".jpg";
+        const { error: upErr } = await sb.storage.from("review-photos").upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000", upsert: false });
+        if (upErr) throw upErr;
+        p.path = path;          // a retry won't upload it twice
+      }
+      paths.push(p.path);
+    }
+    msg.textContent = "Posting…";
+    const { error } = await sb.from("reviews").upsert({
+      place_id: placeId, stars: S.stars, freq: $("rFreq").value, note: $("rNote").value.trim().slice(0, 280) || null,
+      items: items.map(i => ({ name: i.name.trim().slice(0, 80), stars: i.stars })), photos: paths,
+    }, { onConflict: "place_id,user_id" });
     if (error) throw error;
-    S.stars = 0; $("rNote").value = ""; $("npName").value = ""; $("npHood").value = "";
-    document.querySelectorAll("#stars input").forEach(i => i.checked = false);
+    if (S.removedPhotos.length) sb.storage.from("review-photos").remove(S.removedPhotos).catch(() => {});
+    resetRateExtras(); $("npName").value = ""; $("npHood").value = "";
     msg.textContent = "";
     S.ratePick = null; S.rateResults = []; $("rSearch").value = "";
     S.source = "live"; S.sourceChosen = true; S.city = city; S.cat = "All"; S.query = ""; $("q").value = "";
