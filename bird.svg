@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="690 440 640 960" role="img" aria-label="Sayso parrot logo">
+  <g stroke="#000" stroke-width="7" stroke-linejoin="round">
+    <path fill="#FF5254" d="M718,890 C712,700 820,568 955,568 C1010,568 1050,585 1085,612 L1085,910 C1070,1030 1000,1120 918,1178 C870,1270 800,1340 716,1385 Z"/>
+    <path fill="#19C786" d="M718,890 C830,875 925,950 963,1070 C948,1120 935,1150 918,1178 L718,1178 Z"/>
+    <path fill="#2563EB" d="M718,1178 L918,1178 C870,1270 800,1340 716,1385 Z"/>
+    <path fill="#FFC20E" d="M1085,612 C1150,662 1195,752 1197,843 L1088,843 Z"/>
+    <circle cx="937" cy="770" r="108" fill="#F5F4EF"/>
+  </g>
+  <circle cx="953" cy="756" r="57" fill="#000"/>
+  <g fill="#000">
+    <ellipse cx="1194" cy="499" rx="17" ry="50" transform="rotate(30 1194 499)"/>
+    <ellipse cx="1248" cy="553" rx="52" ry="19" transform="rotate(-28 1248 553)"/>
+    <ellipse cx="1260" cy="640" rx="51" ry="19" transform="rotate(5 1260 640)"/>
+  </g>
+</svg>
